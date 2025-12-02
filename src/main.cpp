@@ -5,129 +5,143 @@
 #include <DHT.h>
 #include <BluetoothSerial.h>
 
-#define DHTPIN 32     // Pin yang digunakan untuk sensor DHT11
-#define DHTTYPE DHT11 // Jenis sensor DHT
+// ===============================
+// Konfigurasi Pin & Tipe Sensor
+// ===============================
+#define DHTPIN 32     // Pin data untuk sensor DHT11
+#define DHTTYPE DHT11 // Tipe sensor DHT yang digunakan
 
-#define BuzzerPin 33 // Pin yang digunakan untuk buzzer
+#define BuzzerPin 33 // Pin output untuk buzzer
 
+// Membuat objek untuk sensor DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// Membuat objek BluetoothSerial
+// Membuat objek Bluetooth Classic
 BluetoothSerial SerialBT;
 
-// Task handle
+// Handle untuk dua task FreeRTOS
 TaskHandle_t dhtBuzzerTaskHandle = NULL;
 TaskHandle_t bluetoothTaskHandle = NULL;
 
-// Deklarasi fungsi dhtBuzzerTask dan bluetoothTask
+// Deklarasi fungsi task
 void dhtBuzzerTask(void *parameter);
 void bluetoothTask(void *parameter);
 
 void setup()
 {
-  // Mulai serial monitor
-  Serial.begin(115200);
-  // Inisialisasi sensor DHT11
-  dht.begin();
+  // ===============================
+  // Inisialisasi Serial & Sensor
+  // ===============================
+  Serial.begin(115200);       // Serial monitor
+  dht.begin();                // Memulai sensor DHT11
+  pinMode(BuzzerPin, OUTPUT); // Set pin buzzer sebagai output
 
-  // Inisialisasi pin untuk buzzer
-  pinMode(BuzzerPin, OUTPUT);
-
-  // Inisialisasi Bluetooth Serial
-  SerialBT.begin("ESP32_Slave"); // Nama perangkat Bluetooth Classic
-
-  // Menunggu koneksi Bluetooth
+  // ===============================
+  // Inisialisasi Bluetooth Classic
+  // ===============================
+  SerialBT.begin("ESP32_Slave"); // Nama perangkat BT
   Serial.println("Menunggu koneksi Bluetooth...");
+
+  // Tunggu sampai ada device yang menghubungkan
   while (!SerialBT.hasClient())
   {
     delay(1000);
   }
   Serial.println("Bluetooth Connected!");
 
-  // Membuat task untuk membaca sensor DHT11 dan mengendalikan buzzer
+  // ===============================
+  // Membuat Task untuk Sensor & Buzzer (Core 0)
+  // ===============================
   xTaskCreatePinnedToCore(
-      dhtBuzzerTask,        // Nama fungsi task
+      dhtBuzzerTask,        // Fungsi task
       "DHT & Buzzer Task",  // Nama task
-      10000,                // Ukuran stack task
-      NULL,                 // Parameter untuk task (tidak ada)
-      1,                    // Prioritas task
-      &dhtBuzzerTaskHandle, // Task handle untuk referensi
-      0                     // Core tempat task akan dijalankan (0 atau 1)
+      10000,                // Ukuran stack
+      NULL,                 // Parameter
+      1,                    // Prioritas
+      &dhtBuzzerTaskHandle, // Task handle
+      0                     // Core tempat task dijalankan
   );
 
-  // Membuat task untuk mengirimkan data Bluetooth
+  // ===============================
+  // Membuat Task untuk Bluetooth TX (Core 1)
+  // ===============================
   xTaskCreatePinnedToCore(
-      bluetoothTask,        // Nama fungsi task
-      "Bluetooth Task",     // Nama task
-      10000,                // Ukuran stack task
-      NULL,                 // Parameter untuk task (tidak ada)
-      1,                    // Prioritas task
-      &bluetoothTaskHandle, // Task handle untuk referensi
-      1                     // Core tempat task akan dijalankan (0 atau 1)
+      bluetoothTask,
+      "Bluetooth Task",
+      10000,
+      NULL,
+      1,
+      &bluetoothTaskHandle,
+      1 // Dipisah ke core lain agar proses lebih stabil
   );
 }
 
 void loop()
 {
-  // Loop utama kosong karena task sudah menangani semuanya
+  // Loop kosong — semua pekerjaan dilakukan oleh task FreeRTOS
 }
 
-// Fungsi untuk membaca DHT11 dan mengecek suhu untuk buzzer
+// ===========================================================
+// Task 1: Membaca DHT11 dan Mengontrol Buzzer
+// ===========================================================
 void dhtBuzzerTask(void *parameter)
 {
   while (true)
   {
-    // Membaca suhu dalam Celsius
+    // Membaca suhu & kelembapan
     float temperature = dht.readTemperature();
-
-    // Membaca kelembapan
     float humidity = dht.readHumidity();
 
-    // Periksa jika ada pembacaan yang gagal
+    // Cek jika pembacaan gagal
     if (isnan(temperature) || isnan(humidity))
     {
       Serial.println("Gagal membaca dari sensor DHT!");
     }
     else
     {
-      // Tampilkan hasil pembacaan di Serial Monitor
+      // Tampilkan ke serial monitor
       Serial.print("Suhu: ");
       Serial.print(temperature);
-      Serial.print(" °C ");
-      Serial.print("Kelembapan: ");
+      Serial.print(" °C | Kelembapan: ");
       Serial.print(humidity);
       Serial.println(" %");
 
-      // Periksa suhu dan aktifkan buzzer jika suhu lebih dari 40
+      // Jika suhu lebih dari 40°C, buzzer aktif
       if (temperature > 40)
       {
-        digitalWrite(BuzzerPin, HIGH); // Menyalakan buzzer
+        digitalWrite(BuzzerPin, HIGH);
       }
       else
       {
-        digitalWrite(BuzzerPin, LOW); // Mematikan buzzer
+        digitalWrite(BuzzerPin, LOW);
       }
     }
 
-    // Delay untuk menghindari pembacaan terlalu cepat
-    vTaskDelay(3000 / portTICK_PERIOD_MS); // Delay 3 detik
+    // Delay agar tidak terlalu sering membaca sensor
+    vTaskDelay(3000 / portTICK_PERIOD_MS); // 3 detik
   }
 }
 
-// Fungsi untuk mengirimkan data suhu dan kelembapan melalui Bluetooth
+// ===========================================================
+// Task 2: Mengirimkan Data via Bluetooth Setiap Interval
+// ===========================================================
 void bluetoothTask(void *parameter)
 {
   while (true)
   {
-    // Membaca suhu dalam Celsius
+    // Membaca suhu dan kelembapan
     float temperature = dht.readTemperature();
     float humidity = dht.readHumidity();
 
-    // Kirim data suhu dan kelembapan melalui Bluetooth Serial
-    String data = "Suhu: " + String(temperature) + " °C, Kelembapan: " + String(humidity) + " %";
+    // Format string untuk dikirim
+    String data = "Suhu: " + String(temperature) + " °C, "
+                                                   "Kelembapan: " +
+                  String(humidity) + " %";
+
+    // Kirim melalui Bluetooth
     SerialBT.println(data);
 
-    // Delay untuk menghindari pengiriman terlalu cepat
-    vTaskDelay(5000 / portTICK_PERIOD_MS); // Delay 60 detik
+    // Delay pengiriman data
+    vTaskDelay(5000 / portTICK_PERIOD_MS); // 5 detik
   }
 }
